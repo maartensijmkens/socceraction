@@ -5,8 +5,9 @@ import warnings  # type: ignore
 from typing import Tuple, List, Callable
 
 import socceraction.spadl.config as spadlconfig
+import socceraction.xpoints as xpoints
 
-M : int = 12
+M: int = 12
 N: int = 16
 
 
@@ -225,7 +226,7 @@ class ExpectedThreat:
         return interp2d(x=x, y=y, z=self.xT, kind=kind, bounds_error=False)
 
     def predict(
-        self, actions: pd.DataFrame, use_interpolation: bool = True
+        self, actions: pd.DataFrame, use_interpolation: bool = True, xP = None
     ) -> np.ndarray:
         """ Predicts the xT values for the given actions.
 
@@ -233,6 +234,9 @@ class ExpectedThreat:
         :param use_interpolation: Indicates whether to use bilinear interpolation when inferring xT values.
         :return: Each action, including its xT value.
         """
+
+        if xP is None:
+            xP = np.ones(len(actions))
 
         if not use_interpolation:
             l = self.l
@@ -254,4 +258,4 @@ class ExpectedThreat:
         xT_start = grid[w - 1 - startyc, startxc]
         xT_end = grid[w - 1 - endyc, endxc]
 
-        return xT_end - xT_start
+        return xP * (xT_end - xT_start)

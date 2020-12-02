@@ -1,5 +1,6 @@
 # folders to ignore
 data/*
+data-fifa/*
 private-notebooks*
 tests/data/*
 !tests/data/download.py
