@@ -3,47 +3,69 @@ import pandas as pd
 from tqdm import tqdm
 
 
-def get_diff(movactions: pd.DataFrame, actions: pd.DataFrame):
+def get_score_progression(actions: pd.DataFrame, games: pd.DataFrame):
 
-    indices = []
-    scores = []
+    score_progression = []
+    cols = ['game_id', 'home_team_id', 'away_team_id', 'period_id', 'time_seconds', 'home_score', 'away_score']
 
-    for game_id, game_actions in tqdm(movactions.groupby('game_id')):
-        
-        game_goals = actions[
-            (actions.game_id == game_id) &
-            ((actions.type_name == "shot") | 
-            (actions.type_name == "shot_penalty") | 
-            (actions.type_name == "shot_freekick")) &
-            (actions.result_name == "success") & 
-            (actions.period_id < 5)
+    for game_id, game_actions in actions.groupby(['game_id']):
+
+        game = games[games.game_id == game_id]
+        home_team = game.iloc[0]['home_team_id']
+        away_team = game.iloc[0]['away_team_id']
+        home_score = game.iloc[0]['home_score']
+        away_score = game.iloc[0]['away_score']
+
+        shots = game_actions[
+            (game_actions.type_name == "shot") 
+            | (game_actions.type_name == "shot_penalty") 
+            | (game_actions.type_name == "shot_freekick")
         ]
+        goals = shots[(shots.result_name == "success") & (shots.period_id < 5)]
+        owngoals = game_actions[game_actions.result_name == "owngoal"]
+        allgoals = pd.concat([goals, owngoals]).sort_values(["period_id", "time_seconds"])
 
-        game_owngoals = actions[
-            (actions.game_id == game_id) &
-            (actions.result_name == "owngoal")
-        ]
+        cur_score = [0,0]
+        teams = (home_team, away_team)
 
-        for i, action in game_actions.iterrows():
+        score_progression.append([game_id, home_team, away_team, 1, 0] + cur_score)
 
-            goals = game_goals[
-                (game_goals.period_id < action['period_id']) |
-                ((game_goals.period_id == action['period_id']) &
-                (game_goals.time_seconds < action['time_seconds']))
-            ]
+        for _, goal in allgoals.iterrows():
 
-            owngoals = game_owngoals[
-                (game_owngoals.period_id < action['period_id']) |
-                ((game_owngoals.period_id == action['period_id']) &
-                (game_owngoals.time_seconds < action['time_seconds']))
-            ]            
+            if (goal['result_name'] == "success"):
+                t = teams.index(goal['team_id'])
+            if (goal['result_name'] == "owngoal"):
+                t = (teams.index(goal['team_id']) + 1) % 2
+            cur_score[t] += 1
+            score_progression.append([game_id, home_team, away_team, goal['period_id'], goal['time_seconds']] + cur_score)
 
-            score = len(goals[goals.team_id == action['team_id']]) - len(goals[goals.team_id != action['team_id']]) - len(owngoals[owngoals.team_id == action['team_id']]) + len(owngoals[owngoals.team_id != action['team_id']])
-            indices.append(i)
-            scores.append(score)
-    
-    return np.array(scores)
+        assert (cur_score[0] == home_score and cur_score[1] == away_score)
 
+    return pd.DataFrame(score_progression, columns=cols).sort_values(["game_id", "period_id", "time_seconds"])
+
+
+def get_score_diff_at(action: pd.DataFrame, sp: pd.DataFrame):
+
+    game_id, team_id, period_id, time_seconds = \
+        action[['game_id', 'team_id', 'period_id', 'time_seconds']]
+
+    current_score = sp[
+        (sp.game_id == game_id) & 
+        (((sp.period_id == period_id) & (sp.time_seconds <= time_seconds))
+        | (sp.period_id < period_id))
+    ].tail(1)
+
+    home_team_id, away_team_id, home_score, away_score = \
+        current_score.iloc[0][['home_team_id','away_team_id','home_score','away_score']]
+
+    assert(team_id in [home_team_id, away_team_id])
+
+    diff = int(home_score - away_score)
+
+    if home_team_id == team_id:
+        return diff
+    elif away_team_id == team_id:
+        return -diff
 
 
 def get_timeframe(action):
@@ -58,80 +80,77 @@ def get_timeframe(action):
     return int(t)
 
 
-def get_points(home_score, away_score):
-    if home_score > away_score:
-        return (3, 0)
-    if home_score == away_score:
-        return (1, 1)
-    else:
-        return (0, 3)
-
-
 class ExpectedPoints:
 
-    def __init__(self, d: int = 2):
+    def __init__(self, d: int = 2, t = 8):
         self.d = d
+        self.xwin = np.full((t, d + 1), np.nan)
+        self.xdraw = np.full((t, d + 1), np.nan)
+        self.xlose = np.full((t, d + 1), np.nan)
+ 
 
     def fit(self, actions: pd.DataFrame, games: pd.DataFrame):
 
-        shots = actions[(actions.type_name == "shot") | (actions.type_name == "shot_penalty") | (actions.type_name == "shot_freekick")]
-        goals = shots[(shots.result_name == "success") & (shots.period_id < 5)]
-        owngoals = actions[actions.result_name == "owngoal"]
+        sp = get_score_progression(actions, games)
 
-        points_matrix = np.zeros((8, 2*self.d+1))
-        count_matrix = np.zeros((8, 2*self.d+1))
+        win_matrix = np.zeros_like(self.xwin)
+        draw_matrix = np.zeros_like(self.xdraw)
+        count_matrix = np.zeros_like(self.xwin)
 
-        for _, game in games.iterrows():
+        for i, game in games.iterrows():
 
             game_id = game['game_id']
-            home_team_id = game['home_team_id']
-            away_team_id = game['away_team_id']
             home_score = game['home_score']
             away_score = game['away_score']
 
-            home_points, away_points = get_points(home_score, away_score)
-
-            game_goals = goals[goals.game_id == game_id]
-            game_owngoals = owngoals[owngoals.game_id == game_id]
-
-            home_goals = game_goals[game_goals.team_id == home_team_id]
-            away_owngoals = game_owngoals[game_owngoals.team_id == away_team_id]
-            away_goals = game_goals[game_goals.team_id == away_team_id]
-            home_owngoals = game_owngoals[game_owngoals.team_id == home_team_id]
+            diff = home_score - away_score
 
             for t in range(8):
-                
-                hg = len(home_goals[(home_goals.apply(get_timeframe, axis=1) <= t)])
-                ao = len(away_owngoals[(away_owngoals.apply(get_timeframe, axis=1) <= t)])
-                ag = len(away_goals[(away_goals.apply(get_timeframe, axis=1) <= t)])
-                ho = len(home_owngoals[(home_owngoals.apply(get_timeframe, axis=1) <= t)])  
 
-                home_diff = np.clip(hg + ao - ag - ho, -self.d, self.d)
-                away_diff = -home_diff
+                cur_score = sp[(sp.game_id == game_id) & (sp.apply(get_timeframe, axis=1) <= t)].tail(1)
 
-                points_matrix[t, home_diff+self.d] += home_points
-                points_matrix[t, away_diff+self.d] += away_score
-                count_matrix[t, home_diff+self.d] += 1
-                count_matrix[t, away_diff+self.d] += 1
+                cur_home_score, cur_away_score = \
+                    cur_score.iloc[0][['home_score','away_score']]
 
-        out = np.empty_like(points_matrix)
-        out[:] = np.nan        
-        self.xpoints = np.divide(points_matrix, count_matrix, out = out, where = (count_matrix != 0))
+                cur_diff = int(cur_home_score - cur_away_score)
+                d = np.clip(abs(cur_diff), 0, self.d)
+
+                if diff * cur_diff > 0:
+                    win_matrix[t, d] += 2
+
+                if diff == 0:
+                    draw_matrix[t, d] += 2
+
+                if cur_diff == 0 and diff != 0:
+                    win_matrix[t, d] += 1
+
+                count_matrix[t, d] += 2
+
+        np.divide(win_matrix, count_matrix, out = self.xwin, where = (count_matrix != 0))
+        np.divide(draw_matrix, count_matrix, out = self.xdraw, where = (count_matrix != 0))
+
+        self.fill_gaps(self.xwin)
+        self.fill_gaps(self.xdraw)
+        self.xlose = 1 - self.xwin - self.xdraw
 
 
+    def fill_gaps(self, matrix):
         # replace nans with closest value with the same score diff
-        for t,row in enumerate(self.xpoints):
+        for t,row in enumerate(matrix):
             for s,cell in enumerate(row):
                 if np.isnan(cell):
-                    d = np.argwhere(np.logical_not(np.isnan(self.xpoints[:,s]))).flatten()
+                    d = np.argwhere(np.logical_not(np.isnan(matrix[:,s]))).flatten()
                     f = np.argmin(d-t)
-                    self.xpoints[t,s] = self.xpoints[d[f],s]
+                    matrix[t,s] = matrix[d[f],s]
 
 
-    def predict(self, actions, diff, new_diff):
+    def predict(self, t: int, diff: int):
+
+        d = np.clip(diff, 0, self.d)
+
+        if diff >= 0:
+            xpoints = 3 * self.xwin[t,d] + self.xdraw[t,d]
+        else:
+            xpoints = 3 * self.xlose[t,d] + self.xdraw[t,d]
         
-        t = actions.apply(get_timeframe, axis=1).to_numpy()
-        diff = np.clip(diff, -self.d, self.d) + self.d
-        new_diff = np.clip(new_diff, -self.d, self.d) + self.d
-
-        return self.xpoints[t,new_diff] - self.xpoints[t,diff]
+        return xpoints
