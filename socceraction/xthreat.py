@@ -5,25 +5,35 @@ import warnings  # type: ignore
 from typing import Tuple, List
 
 import socceraction.spadl.config as spadlconfig
-from socceraction.grid import Grid, CartesianGrid
+from socceraction.grid import Grid, DefaultGrid
+from socceraction.timeframe import TimeFrame, DefaultTimeFrame
+from socceraction.xpoints import ExpectedPoints
 
 
-def _count(x: pd.Series, y: pd.Series, grid: Grid) -> np.ndarray:
+def _count(t: pd.Series, x: pd.Series, y: pd.Series, T: int, grid: Grid) -> np.ndarray:
     """ Count the number of actions occurring in each cell of the grid.
 
+    :param t: The timeframes of the actions.
     :param x: The x-coordinates of the actions.
     :param y: The y-coordinates of the actions.
+    :param T: number of timeframes the game is divided in
+    :param grid: Grid object that divides the field in cells.
     :return: A matrix, denoting the amount of actions occurring in each cell. The top-left corner is the origin.
     """
-    x = x[~np.isnan(x) & ~np.isnan(y)]
-    y = y[~np.isnan(x) & ~np.isnan(y)]
 
-    n = grid._get_cell_amount()
+    t = t[~np.isnan(t) & ~np.isnan(x) & ~np.isnan(y)]
+    x = x[~np.isnan(t) & ~np.isnan(x) & ~np.isnan(y)]
+    y = y[~np.isnan(t) & ~np.isnan(x) & ~np.isnan(y)]
 
-    flat_indexes = grid._get_flat_indexes(x, y)
-    vc = flat_indexes.value_counts(sort=False)
-    vector = np.zeros(n)
-    vector[vc.index] = vc
+    n = grid._get_length()
+    vector = np.zeros((T, n))
+
+    grid_indexes = grid._get_flat_indexes(x, y)
+    vc = pd.Series(zip(t, grid_indexes)).value_counts(sort=False)
+    i = tuple(zip(*vc.index))
+
+    vector[i] = vc
+
     return vector
 
 
@@ -31,18 +41,19 @@ def safe_divide(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.divide(a, b, out=np.zeros_like(a), where=b != 0)
 
 
-def scoring_prob(actions: pd.DataFrame, grid: Grid) -> np.ndarray:
+def scoring_prob(actions: pd.DataFrame, T: int, grid: Grid) -> np.ndarray:
     """ Compute the probability of scoring when taking a shot for each cell.
 
     :param actions: Actions, in SPADL format.
-    :param grid: Grid object.
+    :param T: number of timeframes the game is divided in
+    :param grid: Grid object that divides the field in cells.
     :return: A matrix, denoting the probability of scoring for each cell.
     """
     shot_actions = actions[(actions.type_name == "shot")]
     goals = shot_actions[(shot_actions.result_name == "success")]
 
-    shotmatrix = _count(shot_actions.start_x, shot_actions.start_y, grid)
-    goalmatrix = _count(goals.start_x, goals.start_y, grid)
+    shotmatrix = _count(shot_actions.timeframe, shot_actions.start_x, shot_actions.start_y, T, grid)
+    goalmatrix = _count(goals.timeframe, goals.start_x, goals.start_y, T, grid)
     return safe_divide(goalmatrix, shotmatrix)
 
 
@@ -66,71 +77,85 @@ def get_failed(actions: pd.DataFrame) -> pd.DataFrame:
     return actions[actions.result_name == "fail"]
 
 
-def action_prob(actions: pd.DataFrame, grid: Grid) -> Tuple[np.ndarray, np.ndarray]:
+def action_prob(actions: pd.DataFrame, T: int, grid: Grid) -> Tuple[np.ndarray, np.ndarray]:
     """ Compute the probability of taking an action in each cell of the grid. The options are: shooting or moving.
 
     :param actions: Actions, in SPADL format.
-    :param grid: Grid object.
+    :param T: number of timeframes the game is divided in
+    :param grid: Grid object that divides the field in cells.
     :return: 2 matrices, denoting for each cell the probability of choosing to shoot
     and the probability of choosing to move.
     """
     move_actions = get_move_actions(actions)
     shot_actions = actions[(actions.type_name == "shot")]
 
-    movematrix = _count(move_actions.start_x, move_actions.start_y, grid)
-    shotmatrix = _count(shot_actions.start_x, shot_actions.start_y, grid)
+    movematrix = _count(move_actions.timeframe, move_actions.start_x, move_actions.start_y, T, grid)
+    shotmatrix = _count(shot_actions.timeframe, shot_actions.start_x, shot_actions.start_y, T, grid)
     totalmatrix = movematrix + shotmatrix
 
     return safe_divide(shotmatrix, totalmatrix), safe_divide(movematrix, totalmatrix)
 
 
-def move_transition_matrix(actions: pd.DataFrame, grid: Grid) -> Tuple[np.ndarray, np.ndarray]:
+def move_transition_matrix(actions: pd.DataFrame, T: int, grid: Grid) -> Tuple[np.ndarray, np.ndarray]:
     """ Compute the move transition matrix from the given actions.
 
     This is, when a player chooses to move, the probability that he will
     end up in each of the other cells of the grid successfully.
 
     :param actions: Actions, in SPADL format.
-    :param grid: Grid object.
+    :param T: number of timeframes the game is divided in
+    :param grid: Grid object that divides the field in cells.
     :return: The transition matrix.
     """
     move_actions = get_move_actions(actions)
-    n = grid._get_cell_amount()
+    n = grid._get_length()
 
     X = pd.DataFrame()
+    X["timeframe"] = move_actions.timeframe
     X["start_cell"] = grid._get_flat_indexes(move_actions.start_x, move_actions.start_y)
     X["end_cell"] = grid._get_flat_indexes(move_actions.end_x, move_actions.end_y)
     X["result_name"] = move_actions.result_name
 
-    vc = X.start_cell.value_counts(sort=False)
-    start_counts = np.zeros(n)
-    start_counts[vc.index] = vc
+    # count the number of actions with the same timeframe and start_cell
+    start_counts = np.zeros((T, n))
+    vc = X.groupby(['timeframe', 'start_cell']).size()
+    i = tuple(zip(*vc.index))
+    start_counts[i] = vc
 
-    transition_matrix = np.zeros((n, n))
+    # count the number of succesful actions with the same timeframe, start_cell and end_cell
+    transition_counts = np.zeros((T, n, n))
+    vc = X[X.result_name == "success"].groupby(['timeframe', 'start_cell', 'end_cell']).size()
+    i = tuple(zip(*vc.index))
+    transition_counts[i] = vc
 
-    for i in range(0, n):
-        vc2 = X[
-            ((X.start_cell == i) & (X.result_name == "success"))
-        ].end_cell.value_counts(sort=False)
-        transition_matrix[i, vc2.index] = vc2 / start_counts[i]
-
-    return transition_matrix
+    # calculate the probabilities
+    return safe_divide(transition_counts, start_counts[:,:,None])
 
 
 class ExpectedThreat:
     """An implementation of Karun Singh's Expected Threat model (https://karun.in/blog/expected-threat.html)."""
 
-    def __init__(self, grid: Grid = CartesianGrid(), use_interpolation: bool = True, eps: float = 1e-5):
+    def __init__(
+            self, 
+            grid: Grid = DefaultGrid(), 
+            timeframe: TimeFrame = DefaultTimeFrame(), 
+            use_interpolation: bool = True, 
+            expectedPoints: ExpectedPoints = None, 
+            eps: float = 1e-5
+        ):
+        self.timeframe = timeframe
+        self.T = timeframe.get_length()
         self.grid = grid
-        self.n = grid._get_cell_amount()
-        self.eps = eps
+        self.N = grid._get_length()
         self.use_interpolation = use_interpolation
+        self.expectedPoints = expectedPoints
+        self.eps = eps
         self.heatmaps: List[np.ndarray] = []
-        self.xT: np.ndarray = np.zeros(self.n)
-        self.scoring_prob_matrix: np.ndarray = np.zeros(self.n)
-        self.shot_prob_matrix: np.ndarray = np.zeros(self.n)
-        self.move_prob_matrix: np.ndarray = np.zeros(self.n)
-        self.transition_matrix: np.ndarray = np.zeros((self.n, self.n))
+        self.xT: np.ndarray = np.zeros((self.T, self.N))
+        self.scoring_prob_matrix: np.ndarray = np.zeros((self.T, self.N))
+        self.shot_prob_matrix: np.ndarray = np.zeros((self.T, self.N))
+        self.move_prob_matrix: np.ndarray = np.zeros((self.T, self.N))
+        self.transition_matrix: np.ndarray = np.zeros((self.T, self.N, self.N))
 
     def __solve(
         self,
@@ -152,11 +177,12 @@ class ExpectedThreat:
         self.heatmaps.append(self.xT.copy())
 
         while np.any(diff > self.eps):
-            total_payoff = np.zeros(self.n)
+            total_payoff = np.zeros((self.T, self.N))
 
-            for c in range(0, self.n):
-                for q in range(0, self.n):
-                    total_payoff[c] += transition_matrix[c, q] * self.xT[q]
+            for t in range(self.T):
+                for c in range(self.N):
+                    for q in range(self.N):
+                        total_payoff[t, c] += transition_matrix[t, c, q] * self.xT[t, q]
 
             newxT = gs + (p_move * total_payoff)
             diff = newxT - self.xT
@@ -165,7 +191,12 @@ class ExpectedThreat:
             it += 1
 
         if self.use_interpolation:
-            self.xT = self.grid._interpolate(self.xT)
+            xT_interpolated = []
+
+            for t in range(self.T):
+                xT_interpolated.append(self.grid._interpolate(self.xT[t]))
+
+            self.xT = np.array(xT_interpolated)
 
         print("# iterations: ", it)
 
@@ -174,9 +205,11 @@ class ExpectedThreat:
 
         :param actions: Actions, in SPADL format.
         """
-        self.scoring_prob_matrix = scoring_prob(actions, self.grid)
-        self.shot_prob_matrix, self.move_prob_matrix = action_prob(actions, self.grid)
-        self.transition_matrix = move_transition_matrix(actions, self.grid)
+        actions['timeframe'] = self.timeframe.get_timeframe(actions)
+
+        self.scoring_prob_matrix = scoring_prob(actions, self.T, self.grid)
+        self.shot_prob_matrix, self.move_prob_matrix = action_prob(actions, self.T, self.grid)
+        self.transition_matrix = move_transition_matrix(actions, self.T, self.grid)
         self.__solve(
             self.scoring_prob_matrix,
             self.shot_prob_matrix,
@@ -190,47 +223,67 @@ class ExpectedThreat:
         opp_y = spadlconfig.field_width - y
         return self.grid._get_flat_indexes(opp_x, opp_y, self.use_interpolation)
 
-    def predict(
-        self, actions: pd.DataFrame, xP = None
-    ) -> np.ndarray:
+    def predict(self, actions: pd.DataFrame) -> np.ndarray:
         """ Predicts the xT values for the given actions.
 
         :param actions: Actions, in SPADL format.
-        :param use_interpolation: Indicates whether to use bilinear interpolation when inferring xT values.
         :return: Each action, including its xT value.
         """
+        actions['timeframe'] = self.timeframe.get_timeframe(actions)
 
         mov_actions = get_move_actions(actions)
         succ_mov_actions = get_successful(mov_actions)
-        fail_mov_actions = get_failed(mov_actions)
-        def_actions = get_defensive_actions(actions)
-        succ_def_actions = get_successful(def_actions)
+        # fail_mov_actions = get_failed(mov_actions)
+        # def_actions = get_defensive_actions(actions)
+        # succ_def_actions = get_successful(def_actions)
 
         xT = pd.Series(np.zeros(actions.index.size), index=actions.index)
         xT.update(self.predict_successful_move_actions(succ_mov_actions))
-        xT.update(self.predict_failed_move_actions(fail_mov_actions))
-        xT.update(self.predict_successful_def_actions(succ_def_actions))
+        # xT.update(self.predict_failed_move_actions(fail_mov_actions))
+        # xT.update(self.predict_successful_def_actions(succ_def_actions))
 
         return xT
 
     
-    def predict_successful_move_actions(self, actions: pd.DataFrame, xP = None) -> np.ndarray:
+    def predict_successful_move_actions(self, actions: pd.DataFrame) -> np.ndarray:
+        """ Predicts the xT values for the given actions.
 
-        if xP is None:
-            xP = np.ones(len(actions))
+        :param actions: Successful move actions, in SPADL format.
+        :return: Each action, including its xT value.
+        """
+
+        xP = 1
+
+        if self.expectedPoints is not None:
+            t = actions.apply(self.expectedPoints.get_timeframe, axis=1)
+            d = actions.apply(self.expectedPoints.get_score_diff, axis=1)
+            xP_start = self.expectedPoints.predict(t, d)
+            xP_end = self.expectedPoints.predict(t, d + 1)
+            xP = xP_end - xP_start
 
         startc = self.grid._get_flat_indexes(actions.start_x, actions.start_y, self.use_interpolation)
         endc = self.grid._get_flat_indexes(actions.end_x, actions.end_y, self.use_interpolation)  
 
-        xT_start, xT_end = self.xT[startc], self.xT[endc]    
+        xT_start, xT_end = self.xT[actions.timeframe, startc], self.xT[actions.timeframe, endc]    
 
         return pd.Series(xP * (xT_end - xT_start).clip(0), index=actions.index)
 
 
-    def predict_failed_move_actions(self, actions: pd.DataFrame, xP = None) -> np.ndarray:
+    def predict_failed_move_actions(self, actions: pd.DataFrame) -> np.ndarray:
+        """ Predicts the xT values for the given actions.
 
-        if xP is None:
-            xP = np.ones(len(actions))
+        :param actions: Failed move actions, in SPADL format.
+        :return: Each action, including its xT value.
+        """
+
+        xP = 1
+
+        if self.expectedPoints is not None:
+            t = actions.apply(self.expectedPoints.get_timeframe, axis=1)
+            d = actions.apply(self.expectedPoints.get_score_diff, axis=1)
+            xP_start = self.expectedPoints.predict(t, d)
+            xP_end = self.expectedPoints.predict(t, d - 1)
+            xP = xP_end - xP_start
 
         startc = self.grid._get_flat_indexes(actions.start_x, actions.start_y, self.use_interpolation)
         opp_endc = self.get_oppc(actions.end_x, actions.end_y) 
@@ -240,10 +293,21 @@ class ExpectedThreat:
         return pd.Series(xP * (xT_end - 0), index=actions.index)
 
 
-    def predict_successful_def_actions(self, actions: pd.DataFrame, xP = None) -> np.ndarray:
+    def predict_successful_def_actions(self, actions: pd.DataFrame) -> np.ndarray:
+        """ Predicts the xT values for the given actions.
 
-        if xP is None:
-            xP = np.ones(len(actions))
+        :param actions: Successful defensive actions, in SPADL format.
+        :return: Each action, including its xT value.
+        """
+
+        xP = 1
+
+        if self.expectedPoints is not None:
+            t = actions.apply(self.expectedPoints.get_timeframe, axis=1)
+            d = actions.apply(self.expectedPoints.get_score_diff, axis=1)
+            xP_start = self.expectedPoints.predict(t, d)
+            xP_end = self.expectedPoints.predict(t, d - 1)
+            xP = - (xP_end - xP_start)
 
         opp_startc = self.get_oppc(actions.start_x, actions.start_y) 
         endc = self.grid._get_flat_indexes(actions.end_x, actions.end_y, self.use_interpolation)

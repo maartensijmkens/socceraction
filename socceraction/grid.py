@@ -9,8 +9,9 @@ M: int = 12
 N: int = 16
 
 class Grid:
+    """Interface defining the expected methods for a custom grid layout"""
 
-    def _get_cell_amount(self):
+    def _get_length(self):
         raise Exception("Not implemented")
 
     def _get_flat_indexes(self, x: pd.Series, y: pd.Series, use_interpolation: bool = False) -> pd.Series:
@@ -20,46 +21,14 @@ class Grid:
         raise Exception("Not implemented")
 
 
-class PolarGrid(Grid):
-
-    def __init__(self, l: int = 8, w: int = 11):
-        self.l = l
-        self.w = w
-
-    def _get_cell_amount(self):
-        return 2 * (self.l + 1) * self.w
-
-    def _get_cell_indexes(self, x: pd.Series, y: pd.Series, l: int, w: int) -> Tuple[pd.Series, pd.Series]:
-        xmin = 0
-        ymin = 0
-
-        halfx = (spadlconfig.field_length - xmin) / 2
-        halfy = (spadlconfig.field_width - ymin) / 2
-
-        s = ((x - xmin) > halfx).astype(int) 
-        r1 = (x - xmin) ** 2 + (y - ymin - halfy) ** 2
-        r2 = (spadlconfig.field_length - (x - xmin)) ** 2 + (y - ymin - halfy) ** 2
-        ri = ((s == 0) * r1 + (s == 1) * r2) / (halfx ** 2) * l 
-        yj = (y - ymin) / spadlconfig.field_width * w
-        ri = ri.astype(int).clip(0, l)
-        yj = yj.astype(int).clip(0, w - 1)
-
-        return s, ri, yj
-
-    def _get_flat_indexes(self, x: pd.Series, y: pd.Series, use_interpolation: bool = False) -> pd.Series:
-        
-        s, ri, yj = self._get_cell_indexes(x, y, self.l, self.w)
-        return s * (self.l + 1) * self.w + ri * self.w + yj
-
-
-
-class CartesianGrid(Grid):
+class DefaultGrid(Grid):
+    """Default layout of a 12 x 16 grid"""
 
     def __init__(self, l: int = N, w: int = M):
         self.l = l
         self.w = w
 
-    def _get_cell_amount(self):
+    def _get_length(self):
         return self.w * self.l
 
     def _get_cell_indexes(self, x: pd.Series, y: pd.Series, l: int, w: int) -> Tuple[pd.Series, pd.Series]:
@@ -106,3 +75,40 @@ class CartesianGrid(Grid):
         ys = np.linspace(0, spadlconfig.field_width, w)
         z_interpolated = interp(xs, ys)
         return z_interpolated.flatten()
+
+
+class PolarGrid(Grid):
+    """Polar grid layout"""
+
+    def __init__(self, l: int = 8, w: int = 11):
+        self.l = l
+        self.w = w
+
+    def _get_length(self):
+        return 2 * (self.l + 1) * self.w
+
+    def _get_cell_indexes(self, x: pd.Series, y: pd.Series, l: int, w: int) -> Tuple[pd.Series, pd.Series]:
+        xmin = 0
+        ymin = 0
+
+        halfx = (spadlconfig.field_length - xmin) / 2
+        halfy = (spadlconfig.field_width - ymin) / 2
+
+        s = ((x - xmin) > halfx).astype(int) 
+        r1 = (x - xmin) ** 2 + (y - ymin - halfy) ** 2
+        r2 = (spadlconfig.field_length - (x - xmin)) ** 2 + (y - ymin - halfy) ** 2
+        ri = ((s == 0) * r1 + (s == 1) * r2) / (halfx ** 2) * l 
+        yj = (y - ymin) / spadlconfig.field_width * w
+        ri = ri.astype(int).clip(0, l)
+        yj = yj.astype(int).clip(0, w - 1)
+
+        return s, ri, yj
+
+    def _get_flat_indexes(self, x: pd.Series, y: pd.Series, use_interpolation: bool = False) -> pd.Series:
+        
+        s, ri, yj = self._get_cell_indexes(x, y, self.l, self.w)
+        return s * (self.l + 1) * self.w + ri * self.w + yj
+
+
+
+
