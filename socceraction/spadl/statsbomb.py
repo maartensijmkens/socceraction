@@ -133,6 +133,7 @@ def convert_to_actions(events: pd.DataFrame, home_team_id: int) -> pd.DataFrame:
     actions = pd.DataFrame()
 
     events["extra"] = events["extra"].fillna({})
+    events["under_pressure"] = events["under_pressure"].fillna(False)
     events = events.fillna(0)
 
     actions["game_id"] = events.match_id
@@ -164,6 +165,7 @@ def convert_to_actions(events: pd.DataFrame, home_team_id: int) -> pd.DataFrame:
     actions["bodypart_id"] = events[["type_name", "extra"]].apply(
         _get_bodypart_id, axis=1
     )
+    actions["under_pressure"] = events["under_pressure"]
 
     actions = (
         actions[actions.type_id != spadlconfig.actiontypes.index("non_action")]

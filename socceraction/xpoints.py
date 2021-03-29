@@ -53,7 +53,7 @@ class ExpectedPoints:
         np.divide(draw_matrix, count_matrix, out = self.xdraw, where = (count_matrix != 0))
 
         self.fill_gaps(self.xwin)
-        self.fill_gaps(self.xdraw)
+        self.fill_gaps(self.xdraw)       
 
 
     def fill_gaps(self, matrix):
