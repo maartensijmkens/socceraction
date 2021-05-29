@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from sklearn.cluster import KMeans
 
 
 class TimeFrame:
@@ -30,6 +31,8 @@ class QuarterTimeFrame(TimeFrame):
         period_id = action['period_id']
         time_seconds = action['time_seconds']
 
+        if period_id > 4:
+            t = -1
         if period_id <= 2:
             t = 3*(period_id-1) + np.clip(time_seconds // (15*60), 0, 2)
         else:
@@ -41,3 +44,4 @@ class QuarterTimeFrame(TimeFrame):
 
     def get_length(self):
         return 8
+

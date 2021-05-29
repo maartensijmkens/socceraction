@@ -68,7 +68,7 @@ class ScoreProgression:
                 if (goal['result_name'] == "owngoal"):
                     t = (teams.index(goal['team_id']) + 1) % 2
                 cur_score[t] += 1
-                score_progression.append([game_id, home_team, away_team, goal['period_id'], goal['time_seconds']] + cur_score)
+                score_progression.append([game_id, home_team, away_team, goal['period_id'], goal['time_seconds'] + 0.1] + cur_score)
 
             assert (cur_score[0] == home_score and cur_score[1] == away_score)
 

@@ -117,7 +117,7 @@ def move_transition_matrix(actions: pd.DataFrame, T: int, D: int, N: int) -> Tup
 
     # count the number of failed actions with the same timeframe, start_cell and end_opp_cell
     fail_transition_counts = np.zeros((T, D, N, N))
-    vc = get_failed(move_actions).groupby(['timeframe', 'scorediff', 'start_cell', 'start_opp_cell']).size()
+    vc = get_failed(move_actions).groupby(['timeframe', 'scorediff', 'start_cell', 'end_opp_cell']).size()
     i = tuple(zip(*vc.index))
     fail_transition_counts[i] = vc
 
@@ -187,7 +187,7 @@ class ExpectedThreat:
                         for q in range(self.N):
                             total_payoff[t, d, c] += success_transition_matrix[t, d, c, q] * self.xT[t, d, q]
                             if self.use_xRisk:
-                                total_payoff[t, d, c] -= fail_transition_matrix[t, d, c, q] * self.xT[t, d, q]
+                                total_payoff[t, d, c] -= fail_transition_matrix[t, d, c, q] * self.xT[t, -d, q]
 
             newxT = gs + (p_move * total_payoff)
             diff = newxT - self.xT
@@ -202,9 +202,8 @@ class ExpectedThreat:
 
         :param actions: Actions, in SPADL format.
         """
-        actions = actions[actions.period_id < 5]
 
-        df = pd.DataFrame()
+        df = pd.DataFrame(index = actions.index)
         df['start_x'] = actions['start_x']
         df['start_y'] = actions['start_y']
         df['end_x'] = actions['end_x']
@@ -212,7 +211,7 @@ class ExpectedThreat:
         df['start_opp_x'] = spadlconfig.field_length - actions['start_x']
         df['start_opp_y'] = spadlconfig.field_width - actions['start_y']
         df['end_opp_x'] = spadlconfig.field_length - actions['end_x']
-        df['end_opp_y'] = spadlconfig.field_width - actions['end_y']        
+        df['end_opp_y'] = spadlconfig.field_width - actions['end_y']  
         df['start_cell'] = self.grid.get_cell(df['start_x'], df['start_y'])
         df['end_cell'] = self.grid.get_cell(df['end_x'], df['end_y'])
         df['start_opp_cell'] = self.grid.get_cell(df['start_opp_x'], df['start_opp_y'])
@@ -222,15 +221,8 @@ class ExpectedThreat:
         df['type_name'] = actions['type_name']
         df['result_name'] = actions['result_name']
 
-        return df
+        return df[df['timeframe'] >= 0]
 
-    def interpolator_features(self, actions: pd.DataFrame, features):
-        if self.D > 1:
-            features = ['scorediff'] + features
-        if self.T > 1:
-            features = ['timeframe'] + features
-        
-        return actions[features].to_numpy()
 
     def fit(self, actions: pd.DataFrame):
         """ Fits the xT model with the given actions.
@@ -297,11 +289,7 @@ class ExpectedThreat:
 
         if not self.use_interpolation:
             xT_start = self.xT[actions.timeframe, actions.scorediff, actions.start_cell]
-            xT_end = self.xT[actions.timeframe, actions.scorediff, actions.end_cell]   
-
-        else:
-            xT_start = self.interpolator(self.interpolator_features(actions, ['start_x', 'start_y']))
-            xT_end = self.interpolator(self.interpolator_features(actions, ['end_x', 'end_y']))
+            xT_end = self.xT[actions.timeframe, actions.scorediff, actions.end_cell]
 
         return pd.Series(xT_end - xT_start, index=actions.index)
 
@@ -316,11 +304,7 @@ class ExpectedThreat:
 
         if not self.use_interpolation:
             xT_start = self.xT[actions.timeframe, actions.scorediff, actions.start_cell]
-            xT_end = -self.xT[actions.timeframe, actions.scorediff, actions.end_opp_cell]   
-
-        else:
-            xT_start = self.interpolator(self.interpolator_features(actions, ['start_x', 'start_y']))
-            xT_end = -self.interpolator(self.interpolator_features(actions, ['end_opp_x', 'end_opp_y']))
+            xT_end = -self.xT[actions.timeframe, actions.scorediff, actions.end_opp_cell] 
 
         return pd.Series(xT_end - xT_start, index=actions.index)
 
@@ -335,11 +319,7 @@ class ExpectedThreat:
 
         if not self.use_interpolation:
             xT_start = -self.xT[actions.timeframe, actions.scorediff, actions.start_opp_cell]
-            xT_end = self.xT[actions.timeframe, actions.scorediff, actions.end_cell]   
-
-        else:
-            xT_start = -self.interpolator(self.interpolator_features(actions, ['start_opp_x', 'start_opp_y']))
-            xT_end = self.interpolator(self.interpolator_features(actions, ['end_x', 'end_y']))
+            xT_end = self.xT[actions.timeframe, actions.scorediff, actions.end_cell]
 
         return pd.Series(xT_end - xT_start, index=actions.index)
 
